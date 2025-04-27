@@ -2,10 +2,17 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Circle } from "lucide-react";
+import { Circle, Mic, MicOff } from "lucide-react";
 
 export const ChatWindow = () => {
   const [inputValue, setInputValue] = useState("");
+  const [isListening, setIsListening] = useState(false);
+
+  const toggleMic = () => {
+    setIsListening(!isListening);
+    // We'll implement voice functionality in the next step
+    console.log("Mic toggled:", !isListening);
+  };
 
   return (
     <div className="flex-1 flex flex-col h-screen bg-eva-bg">
@@ -41,6 +48,18 @@ export const ChatWindow = () => {
             placeholder="Type your message..."
             className="flex-1 bg-eva-bg text-eva-text-primary border-eva-border placeholder:text-eva-text-secondary"
           />
+          <Button 
+            type="button"
+            onClick={toggleMic}
+            variant="outline"
+            className={`border-eva-border ${
+              isListening 
+                ? "bg-eva-purple text-white hover:bg-eva-purple-hover" 
+                : "bg-eva-bg text-eva-text-primary hover:bg-eva-panel"
+            }`}
+          >
+            {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+          </Button>
           <Button 
             type="submit"
             className="bg-eva-purple hover:bg-eva-purple-hover text-white"
