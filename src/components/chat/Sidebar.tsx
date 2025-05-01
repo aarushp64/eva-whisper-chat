@@ -4,7 +4,7 @@ import { PlusCircle } from "lucide-react";
 
 export const Sidebar = () => {
   return (
-    <div className="w-64 bg-eva-panel border-r border-eva-border h-screen flex flex-col p-4">
+    <div className="w-64 bg-eva-panel border-r border-eva-border h-screen flex flex-col p-4 font-space">
       <div className="flex items-center space-x-3 mb-8">
         <div className="w-10 h-10 rounded-full bg-eva-purple flex items-center justify-center">
           <span className="text-white font-medium">EVA</span>

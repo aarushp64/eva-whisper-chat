@@ -1,3 +1,4 @@
+
 import type { Config } from "tailwindcss";
 
 export default {
@@ -11,6 +12,9 @@ export default {
   prefix: "",
   theme: {
     extend: {
+      fontFamily: {
+        space: ["'Space Grotesk'", "sans-serif"],
+      },
       colors: {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',

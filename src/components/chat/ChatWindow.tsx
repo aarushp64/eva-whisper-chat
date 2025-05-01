@@ -8,7 +8,7 @@ export const ChatWindow = () => {
   const [inputValue, setInputValue] = useState("");
 
   return (
-    <div className="flex-1 flex flex-col h-screen bg-eva-bg">
+    <div className="flex-1 flex flex-col h-screen bg-eva-bg font-space">
       {/* Status bar */}
       <div className="p-4 border-b border-eva-border flex items-center">
         <Circle className="w-3 h-3 text-green-500 mr-2" />
