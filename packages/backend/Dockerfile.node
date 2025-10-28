@@ -1,0 +1,21 @@
+# Use an official Bun runtime as a parent image
+FROM oven/bun:1
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy package.json to the container
+COPY package.json .
+
+# Install dependencies using Bun
+# Using --frozen-lockfile is a good practice for CI/CD
+RUN bun install --frozen-lockfile
+
+# Copy the rest of the backend source code
+COPY ./server ./server
+
+# Expose the port the app runs on
+EXPOSE 8080
+
+# Command to run the server
+CMD ["bun", "run", "server/server.js"]

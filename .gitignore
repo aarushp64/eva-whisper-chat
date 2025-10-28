@@ -1,24 +1,92 @@
-# Logs
-logs
-*.log
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
+.pnp.*
+dist/
+dist-ssr/
 *.local
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+eva.db
+
+# Uploads & Cache
+uploads/
+cache/
+exports/
+*.tmp
+
+# ML Models & Data
+models/*.pt
+models/*.pth
+models/*.bin
+models/*.onnx
+data/embeddings/
+data/vector_store/
+
+# Docker
+.dockerignore
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
+!.vscode/settings.json
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*.swp
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Testing
+.pytest_cache/
+coverage/
+.nyc_output/
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
+.Python

@@ -1,0 +1,10 @@
+{
+  "name": "eva-whisper-chat-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:node": "bun run server/server.js",
+    "dev:python": "python server/app.py"
+  },
+  "dependencies": {}
+}
