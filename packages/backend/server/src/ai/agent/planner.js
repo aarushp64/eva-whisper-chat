@@ -23,9 +23,10 @@ Rules:
  * Generate an execution plan for a user's task request.
  *
  * @param {string} input — the user's task description
+ * @param {{provider?: string, model?: string, apiKey?: string}} [llmConfig]
  * @returns {Promise<{steps: string[]}>} — the plan with ordered steps
  */
-export async function createPlan(input) {
+export async function createPlan(input, llmConfig) {
   console.log('[Planner] Generating plan for:', input.slice(0, 80));
 
   try {
@@ -34,7 +35,7 @@ export async function createPlan(input) {
       { role: 'user', content: input },
     ];
 
-    const response = await routePrompt(messages);
+    const response = await routePrompt(messages, llmConfig);
 
     // Try to parse the model's response as JSON
     const parsed = JSON.parse(response.trim());

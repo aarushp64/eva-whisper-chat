@@ -120,9 +120,10 @@ io.on('connection', (socket) => {
         }
       }
 
-      // Pass senderId to handleMessage for proper message attribution
+      // Pass senderId and optional LLM config to handleMessage
+      // llmConfig: { provider, model, apiKey } — runtime selection from frontend
       const messageData = { ...data, senderId: socket.userId };
-      const response = await handleMessage(messageData); // handleMessage should save to DB
+      const response = await handleMessage(messageData); // handleMessage saves to DB
 
       // Broadcast message to the relevant room
       io.to(targetRoom).emit('receive_message', response);

@@ -5,6 +5,7 @@
  *   import { generateResponse } from '../utils/responseGenerator.js'
  *
  * Routes through: memory → runAssistant (intent → planner → executor → models)
+ * Accepts optional runtime LLM config from the frontend via socket data.
  */
 
 import { routePrompt } from '../src/ai/router.js';
@@ -25,9 +26,10 @@ const AGENT_MODE = process.env.AGENT_MODE || 'full';
  * @param {object|null} userPreference — user preferences from DB
  * @param {string} sentiment — detected message sentiment
  * @param {boolean} isGroupChat — whether this is a group conversation
+ * @param {{provider?: string, model?: string, apiKey?: string}} [llmConfig] — runtime LLM config from frontend
  * @returns {Promise<string>} — the AI's response
  */
-export async function generateResponse(content, userPreference, sentiment, isGroupChat) {
+export async function generateResponse(content, userPreference, sentiment, isGroupChat, llmConfig) {
   try {
     // Store user message in memory
     addMessage('user', content);
@@ -44,17 +46,17 @@ export async function generateResponse(content, userPreference, sentiment, isGro
         ...memory.slice(0, -1),
         { role: 'user', content },
       ];
-      response = await routePrompt(messages);
+      response = await routePrompt(messages, llmConfig);
 
     } else if (AGENT_MODE === 'simple') {
       // Legacy agent loop — tool-calling iteration
       console.log('[ResponseGenerator] Mode: simple agent loop');
-      response = await runAgent(content);
+      response = await runAgent(content, llmConfig);
 
     } else {
       // Full assistant — intent → planner → executor
       console.log('[ResponseGenerator] Mode: full assistant');
-      response = await runAssistant(content);
+      response = await runAssistant(content, llmConfig);
     }
 
     // Store assistant response in memory

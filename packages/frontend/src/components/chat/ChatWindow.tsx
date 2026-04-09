@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { AudioRecorder } from './AudioRecorder';
+import { LLMSettingsModal, getLLMConfig, type LLMConfig } from './LLMSettingsModal';
+import { Badge } from '@/components/ui/badge';
 import io, { Socket } from 'socket.io-client';
 import TypingIndicator from '../ui/TypingIndicator';
 
@@ -27,6 +29,9 @@ export const ChatWindow = () => {
   const [inputValue, setInputValue] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
+
+  // Runtime LLM config — API key from state, provider/model from sessionStorage
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(getLLMConfig);
 
   const messageEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -88,6 +93,11 @@ export const ChatWindow = () => {
     }, 2000);
   };
 
+  /** Called when the user saves LLM settings */
+  const handleConfigChange = useCallback((config: LLMConfig | null) => {
+    setLlmConfig(config);
+  }, []);
+
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (inputValue.trim() && !isProcessing) {
@@ -98,7 +108,25 @@ export const ChatWindow = () => {
         timestamp: new Date().toLocaleTimeString(),
       };
       setMessages((prevMessages) => [...prevMessages, newMessage]);
-      socket.emit('chat_message', { room: 'general', message: inputValue, user: 'user' });
+
+      // Build socket payload — include llmConfig so the backend routes
+      // to the user-selected provider.
+      const payload: Record<string, unknown> = {
+        room: 'general',
+        message: inputValue,
+        user: 'user',
+      };
+
+      // Attach runtime LLM config if set
+      if (llmConfig) {
+        payload.llmConfig = {
+          provider: llmConfig.provider,
+          model: llmConfig.model,
+          ...(llmConfig.apiKey ? { apiKey: llmConfig.apiKey } : {}),
+        };
+      }
+
+      socket.emit('chat_message', payload);
       setInputValue('');
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
@@ -119,15 +147,30 @@ export const ChatWindow = () => {
     setMessages((prevMessages) => [...prevMessages, newMessage]);
   };
 
+  // Display label for the active provider
+  const providerLabel = llmConfig
+    ? `${llmConfig.provider === 'groq' ? '⚡' : '🔒'} ${llmConfig.model}`
+    : null;
+
   return (
     <div className="flex-1 flex flex-col h-screen bg-eva-bg-secondary">
       <header className="flex items-center justify-between p-4 border-b border-eva-border">
-        <h2 className="text-xl font-bold">EVA Assistant</h2>
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center gap-3">
+          <h2 className="text-xl font-bold">EVA Assistant</h2>
+          {providerLabel && (
+            <Badge variant="outline" className="text-xs border-eva-primary/50 text-eva-primary">
+              {providerLabel}
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center space-x-3">
           <span className="w-3 h-3 bg-green-500 rounded-full"></span>
           <span>Online</span>
+          {/* LLM Settings button — top-right */}
+          <LLMSettingsModal onConfigChange={handleConfigChange} />
         </div>
       </header>
+
       <div className="flex-1 p-6 overflow-y-auto space-y-4">
         {messages.map((message) => (
           <div
@@ -145,6 +188,7 @@ export const ChatWindow = () => {
         ))}
         <div ref={messageEndRef} />
       </div>
+
       <div className="p-4 border-t border-eva-border">
         <TypingIndicator typingUsers={typingUsers} />
         <form onSubmit={handleSendMessage} className="flex items-center space-x-4">

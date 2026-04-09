@@ -15,9 +15,10 @@ import { tools, getToolDescriptions, findTool } from '../tools/index.js';
  *
  * @param {string} step — the step description
  * @param {string} [context] — optional context from previous steps
+ * @param {{provider?: string, model?: string, apiKey?: string}} [llmConfig]
  * @returns {Promise<string>} — the result of executing this step
  */
-export async function executeStep(step, context = '') {
+export async function executeStep(step, context = '', llmConfig) {
   console.log(`[Executor] Executing step: "${step.slice(0, 80)}"`);
 
   const systemPrompt = `You are an AI executor. Complete the given step.
@@ -41,7 +42,7 @@ Do NOT wrap JSON in markdown code blocks.`;
   ];
 
   try {
-    const response = await routePrompt(messages);
+    const response = await routePrompt(messages, llmConfig);
 
     // Check if the LLM wants to call a tool
     try {
@@ -70,9 +71,10 @@ Do NOT wrap JSON in markdown code blocks.`;
     // Fallback: try to answer with a simpler prompt
     try {
       console.log('[Executor] Falling back to simple LLM response');
-      const fallback = await routePrompt([
-        { role: 'user', content: step },
-      ]);
+      const fallback = await routePrompt(
+        [{ role: 'user', content: step }],
+        llmConfig
+      );
       return fallback;
     } catch (fallbackErr) {
       return `Step failed: ${err.message}`;

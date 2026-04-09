@@ -26,11 +26,15 @@ const MAX_AGENT_STEPS = 5;
  * intent detection → planning → execution → response
  *
  * @param {string} input — the user's message
+ * @param {{provider?: string, model?: string, apiKey?: string}} [llmConfig] — runtime LLM config
  * @returns {Promise<string>} — the final response
  */
-export async function runAssistant(input) {
+export async function runAssistant(input, llmConfig) {
   console.log(`\n${'═'.repeat(60)}`);
   console.log(`[Assistant] Input: "${input.slice(0, 100)}"`);
+  if (llmConfig) {
+    console.log(`[Assistant] LLM Config: ${llmConfig.provider}/${llmConfig.model || 'default'}`);
+  }
 
   const intent = detectIntent(input);
   console.log(`[Assistant] Intent: ${intent}`);
@@ -38,25 +42,25 @@ export async function runAssistant(input) {
   try {
     switch (intent) {
       case 'CHAT':
-        return await handleChat(input);
+        return await handleChat(input, llmConfig);
 
       case 'TASK':
-        return await handleTask(input);
+        return await handleTask(input, llmConfig);
 
       case 'ACTION':
-        return await handleAction(input);
+        return await handleAction(input, llmConfig);
 
       case 'SEARCH':
-        return await handleSearch(input);
+        return await handleSearch(input, llmConfig);
 
       default:
-        return await handleChat(input);
+        return await handleChat(input, llmConfig);
     }
   } catch (err) {
     console.error(`[Assistant] Error:`, err.message);
     // Final fallback — simple LLM call
     try {
-      return await routePrompt([{ role: 'user', content: input }]);
+      return await routePrompt([{ role: 'user', content: input }], llmConfig);
     } catch {
       return 'I apologize, but I encountered an issue processing your request. Please try again.';
     }
@@ -68,7 +72,7 @@ export async function runAssistant(input) {
 /**
  * CHAT — simple conversational response, includes memory for context.
  */
-async function handleChat(input) {
+async function handleChat(input, llmConfig) {
   console.log('[Assistant] Handling as CHAT');
 
   const memory = getMemory();
@@ -78,17 +82,17 @@ async function handleChat(input) {
     { role: 'user', content: input },
   ];
 
-  return await routePrompt(messages);
+  return await routePrompt(messages, llmConfig);
 }
 
 /**
  * TASK — multi-step workflow. Generate a plan, then execute each step.
  */
-async function handleTask(input) {
+async function handleTask(input, llmConfig) {
   console.log('[Assistant] Handling as TASK');
 
   // Step 1: Generate a plan
-  const plan = await createPlan(input);
+  const plan = await createPlan(input, llmConfig);
   console.log(`[Assistant] Plan: ${JSON.stringify(plan.steps)}`);
 
   // Step 2: Execute each step sequentially, accumulating context
@@ -99,7 +103,7 @@ async function handleTask(input) {
     const step = plan.steps[i];
     console.log(`[Assistant] Executing step ${i + 1}/${plan.steps.length}: ${step}`);
 
-    const result = await executeStep(step, context);
+    const result = await executeStep(step, context, llmConfig);
     results.push({ step, result });
 
     // Build context for the next step
@@ -118,21 +122,21 @@ async function handleTask(input) {
     },
   ];
 
-  return await routePrompt(summaryMessages);
+  return await routePrompt(summaryMessages, llmConfig);
 }
 
 /**
  * ACTION — single direct action, attempt tool execution first.
  */
-async function handleAction(input) {
+async function handleAction(input, llmConfig) {
   console.log('[Assistant] Handling as ACTION');
-  return await executeStep(input);
+  return await executeStep(input, '', llmConfig);
 }
 
 /**
  * SEARCH — information lookup, answered by the LLM with search context.
  */
-async function handleSearch(input) {
+async function handleSearch(input, llmConfig) {
   console.log('[Assistant] Handling as SEARCH');
 
   const memory = getMemory();
@@ -147,7 +151,7 @@ If the question is about files or code, suggest using tools in your next respons
     { role: 'user', content: input },
   ];
 
-  return await routePrompt(messages);
+  return await routePrompt(messages, llmConfig);
 }
 
 // ─── Legacy agent loop (preserved for backward compatibility) ───────
@@ -157,9 +161,10 @@ If the question is about files or code, suggest using tools in your next respons
  * Kept for cases where direct tool-loop iteration is preferred.
  *
  * @param {string} userInput
+ * @param {{provider?: string, model?: string, apiKey?: string}} [llmConfig]
  * @returns {Promise<string>}
  */
-export async function runAgent(userInput) {
+export async function runAgent(userInput, llmConfig) {
   let context = userInput;
   let steps = 0;
 
@@ -180,7 +185,7 @@ Otherwise respond normally. No markdown code blocks around JSON.`,
       { role: 'user', content: context },
     ];
 
-    const response = await routePrompt(messages);
+    const response = await routePrompt(messages, llmConfig);
 
     try {
       const parsed = JSON.parse(response.trim());

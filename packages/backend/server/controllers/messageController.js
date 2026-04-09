@@ -9,7 +9,7 @@ import { extractKeyInformation } from '../utils/memoryManager.js';
 // Handle incoming message and generate response
 export const handleMessage = async (data) => {
   try {
-    const { chatId, groupId, content, senderId } = data;
+    const { chatId, groupId, content, senderId, llmConfig } = data;
     
     // Determine if it's a group chat or private chat
     const isGroupChat = !!groupId;
@@ -51,12 +51,12 @@ export const handleMessage = async (data) => {
     
     // Extract and store any key information from the message
     await extractKeyInformation(senderId, content);
-    
+
     // Get user preferences to personalize response
     const userPreference = await UserPreference.findOne({ userId: senderId });
-    
-    // Generate EVA's response
-    const responseContent = await generateResponse(content, userPreference, sentiment, isGroupChat);
+
+    // Generate EVA's response (pass runtime LLM config if provided)
+    const responseContent = await generateResponse(content, userPreference, sentiment, isGroupChat, llmConfig);
     
     // Save EVA's response
     const assistantMessage = new Message({
