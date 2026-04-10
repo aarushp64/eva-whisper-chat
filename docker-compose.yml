@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Ollama - Local LLM Server
+  # Ollama — Local LLM inference
   ollama:
     image: ollama/ollama:latest
     container_name: eva-ollama
@@ -10,16 +10,8 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    # Uncomment for GPU support
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
 
-  # Python Backend - Flask + AI Agent
+  # Python Backend — Flask + AI Agent
   python-backend:
     build:
       context: ./packages/backend
@@ -27,62 +19,16 @@ services:
     container_name: eva-backend
     ports:
       - "5000:5000"
+    env_file:
+      - ./packages/backend/server/.env
     environment:
-      - DATABASE_URI=postgresql://eva_user:eva_secure_password@postgres:5432/eva
-      - SECRET_KEY=your_secret_key_change_in_production
-      - JWT_SECRET_KEY=your_jwt_secret_key_change_in_production
       - OLLAMA_HOST=http://ollama:11434
-      - LLM_MODEL=llama3.2
-      - LLM_PROVIDER=ollama
-      - RAG_PERSIST_DIR=/app/data/vector_store
     depends_on:
-      - postgres
       - ollama
     volumes:
       - ./packages/backend/server/uploads:/app/uploads
       - ./packages/backend/server/data:/app/data
     restart: unless-stopped
 
-  # Node.js Backend (Optional)
-  node-backend:
-    build:
-      context: ./packages/backend
-      dockerfile: Dockerfile.node
-    container_name: eva-node
-    ports:
-      - "8081:8080"
-    environment:
-      - MONGODB_URI=mongodb://mongo:27017/eva-assistant
-      - CLIENT_URL=http://localhost:5173
-    depends_on:
-      - mongo
-    restart: unless-stopped
-
-  # PostgreSQL Database
-  postgres:
-    image: postgres:13
-    container_name: eva-postgres
-    environment:
-      POSTGRES_DB: eva
-      POSTGRES_USER: eva_user
-      POSTGRES_PASSWORD: eva_secure_password
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    restart: unless-stopped
-
-  # MongoDB Database
-  mongo:
-    image: mongo:latest
-    container_name: eva-mongo
-    volumes:
-      - mongo_data:/data/db
-    ports:
-      - "27017:27017"
-    restart: unless-stopped
-
 volumes:
-  postgres_data:
-  mongo_data:
   ollama_data:

@@ -120,13 +120,22 @@ io.on('connection', (socket) => {
         }
       }
 
-      // Pass senderId and optional LLM config to handleMessage
-      // llmConfig: { provider, model, apiKey } — runtime selection from frontend
+      // Pass senderId, LLM config, and optional approval result to handleMessage.
+      // llmConfig: { provider, model, apiKey, approvalResult }
+      // approvalResult: { sessionId, approved } — for HITL resume
       const messageData = { ...data, senderId: socket.userId };
-      const response = await handleMessage(messageData); // handleMessage saves to DB
+      const response = await handleMessage(messageData);
 
-      // Broadcast message to the relevant room
-      io.to(targetRoom).emit('receive_message', response);
+      // Detect HITL approval response and emit a dedicated event
+      if (response?.message?.isApproval) {
+        io.to(targetRoom).emit('approval_request', {
+          content: response.message.content,
+          pendingApproval: response.message.pendingApproval,
+          sessionId: response.message.sessionId,
+        });
+      } else {
+        io.to(targetRoom).emit('receive_message', response);
+      }
     } catch (error) {
       console.error('Error processing message:', error);
       socket.emit('error', { message: 'Error processing your message' });

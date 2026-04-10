@@ -1,11 +1,12 @@
 /**
  * Response Generator — bridges messageController.js to the AI agent system
  *
- * This file fulfills the import in messageController.js:
- *   import { generateResponse } from '../utils/responseGenerator.js'
+ * Phase 2: Supports HITL approval flow. When the agent returns a
+ * pending_approval object, this layer passes it through to the
+ * messageController as a structured socket event.
  *
  * Routes through: memory → runAssistant (intent → planner → executor → models)
- * Accepts optional runtime LLM config from the frontend via socket data.
+ * Accepts optional runtime LLM config + approval result from the frontend via socket data.
  */
 
 import { routePrompt } from '../src/ai/router.js';
@@ -26,13 +27,20 @@ const AGENT_MODE = process.env.AGENT_MODE || 'full';
  * @param {object|null} userPreference — user preferences from DB
  * @param {string} sentiment — detected message sentiment
  * @param {boolean} isGroupChat — whether this is a group conversation
- * @param {{provider?: string, model?: string, apiKey?: string}} [llmConfig] — runtime LLM config from frontend
- * @returns {Promise<string>} — the AI's response
+ * @param {{
+ *   provider?: string, model?: string, apiKey?: string,
+ *   approvalResult?: { sessionId: string, approved: boolean }
+ * }} [llmConfig] — runtime LLM config + optional HITL approval
+ * @returns {Promise<string | { isApproval: boolean, response: string, pendingApproval?: object, sessionId?: string }>}
  */
 export async function generateResponse(content, userPreference, sentiment, isGroupChat, llmConfig) {
   try {
-    // Store user message in memory
-    addMessage('user', content);
+    const approvalResult = llmConfig?.approvalResult;
+
+    // If resuming from HITL, don't add to memory again (already stored)
+    if (!approvalResult) {
+      addMessage('user', content);
+    }
 
     let response;
 
@@ -59,8 +67,21 @@ export async function generateResponse(content, userPreference, sentiment, isGro
       response = await runAssistant(content, llmConfig);
     }
 
-    // Store assistant response in memory
-    addMessage('assistant', response);
+    // ── HITL: pass approval objects through unchanged ──
+    if (response && typeof response === 'object' && response.pendingApproval) {
+      console.log('[ResponseGenerator] HITL approval pending — forwarding to frontend');
+      return {
+        isApproval: true,
+        response: response.response || 'An action requires your approval.',
+        pendingApproval: response.pendingApproval,
+        sessionId: response.sessionId,
+      };
+    }
+
+    // Normal string response — store in memory
+    if (typeof response === 'string' && !approvalResult) {
+      addMessage('assistant', response);
+    }
 
     return response;
   } catch (err) {

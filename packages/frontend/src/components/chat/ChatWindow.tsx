@@ -15,6 +15,15 @@ interface Message {
   text: string;
   sender: 'user' | 'eva';
   timestamp: string;
+  isApproval?: boolean;
+  sessionId?: string;
+  pendingApproval?: {
+    tool: string;
+    description: string;
+    input: Record<string, unknown>;
+    risk_level: 'low' | 'high';
+    prompt: string;
+  };
 }
 
 export const ChatWindow = () => {
@@ -32,6 +41,15 @@ export const ChatWindow = () => {
 
   // Runtime LLM config — API key from state, provider/model from sessionStorage
   const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(getLLMConfig);
+
+  // Pending approval state — when the agent requests HITL approval
+  const [pendingApproval, setPendingApproval] = useState<{
+    sessionId: string;
+    tool: string;
+    description: string;
+    input: Record<string, unknown>;
+    prompt: string;
+  } | null>(null);
 
   const messageEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -63,6 +81,27 @@ export const ChatWindow = () => {
         timestamp: new Date().toLocaleTimeString(),
       };
       setMessages((prevMessages) => [...prevMessages, newMessage]);
+      setIsProcessing(false);
+    });
+
+    // ── Phase 2: HITL approval request from backend ──
+    socket.on('approval_request', (data: {
+      content: string;
+      sessionId: string;
+      pendingApproval: {
+        tool: string;
+        description: string;
+        input: Record<string, unknown>;
+        risk_level: 'high';
+        prompt: string;
+      };
+    }) => {
+      console.log('[HITL] Approval request received:', data);
+      setPendingApproval({
+        sessionId: data.sessionId,
+        ...data.pendingApproval,
+      });
+      setIsProcessing(false);
     });
 
     socket.on('user_typing', (data: { user: string }) => {
@@ -77,6 +116,7 @@ export const ChatWindow = () => {
       socket.off('connect');
       socket.off('disconnect');
       socket.off('chat_message');
+      socket.off('approval_request');
       socket.off('user_typing');
       socket.off('user_stopped_typing');
     };
@@ -97,6 +137,41 @@ export const ChatWindow = () => {
   const handleConfigChange = useCallback((config: LLMConfig | null) => {
     setLlmConfig(config);
   }, []);
+
+  /**
+   * Send an approval response (approve or reject) back to the backend
+   * to resume plan execution.
+   */
+  const handleApproval = useCallback((approved: boolean) => {
+    if (!pendingApproval) return;
+
+    console.log(`[HITL] User ${approved ? 'approved' : 'rejected'}: ${pendingApproval.tool}`);
+
+    // Show the user's decision as a message
+    const decisionMessage: Message = {
+      id: String(Date.now()),
+      text: approved ? `✅ Approved: ${pendingApproval.description}` : `❌ Rejected: ${pendingApproval.description}`,
+      sender: 'user',
+      timestamp: new Date().toLocaleTimeString(),
+    };
+    setMessages(prev => [...prev, decisionMessage]);
+
+    // Send approval result via socket — backend resumes execution
+    socket.emit('send_message', {
+      room: 'general',
+      message: approved ? 'approve' : 'reject',
+      user: 'user',
+      llmConfig: {
+        approvalResult: {
+          sessionId: pendingApproval.sessionId,
+          approved,
+        },
+      },
+    });
+
+    setPendingApproval(null);
+    setIsProcessing(true);
+  }, [pendingApproval]);
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -128,6 +203,7 @@ export const ChatWindow = () => {
 
       socket.emit('chat_message', payload);
       setInputValue('');
+      setIsProcessing(true);
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
       }
@@ -137,7 +213,6 @@ export const ChatWindow = () => {
 
   const handleSendAudioMessage = (audioData: string, format: string) => {
     console.log(`Sending audio message of format ${format}`);
-    // Placeholder for sending audio to backend
     const newMessage: Message = {
       id: String(Date.now()),
       text: 'Audio message sent.',
@@ -166,7 +241,6 @@ export const ChatWindow = () => {
         <div className="flex items-center space-x-3">
           <span className="w-3 h-3 bg-green-500 rounded-full"></span>
           <span>Online</span>
-          {/* LLM Settings button — top-right */}
           <LLMSettingsModal onConfigChange={handleConfigChange} />
         </div>
       </header>
@@ -180,12 +254,51 @@ export const ChatWindow = () => {
               <AvatarImage src={message.sender === 'eva' ? '/eva-avatar.png' : '/user-avatar.png'} />
               <AvatarFallback>{message.sender === 'eva' ? 'E' : 'U'}</AvatarFallback>
             </Avatar>
-            <div className={`rounded-2xl p-4 mx-3 ${message.sender === 'user' ? 'bg-eva-primary text-white rounded-br-none' : 'bg-eva-message-bubble text-eva-text-primary rounded-bl-none'}`}>
+            <div className={`rounded-2xl p-4 mx-3 ${
+              message.sender === 'user'
+                ? 'bg-eva-primary text-white rounded-br-none'
+                : 'bg-eva-message-bubble text-eva-text-primary rounded-bl-none'
+            }`}>
               <p>{message.text}</p>
               <span className="text-xs opacity-60 mt-1 block text-right">{message.timestamp}</span>
             </div>
           </div>
         ))}
+
+        {/* ── Phase 2: HITL Approval Card ── */}
+        {pendingApproval && (
+          <div className="flex items-start self-start max-w-[80%]">
+            <Avatar className="w-8 h-8">
+              <AvatarFallback>⚠️</AvatarFallback>
+            </Avatar>
+            <div className="rounded-2xl p-4 mx-3 bg-yellow-500/10 border border-yellow-500/30 text-yellow-200 rounded-bl-none">
+              <p className="font-semibold text-yellow-400 mb-1">⚠️ Action Requires Approval</p>
+              <p className="text-sm mb-1"><strong>Tool:</strong> {pendingApproval.tool}</p>
+              <p className="text-sm mb-1"><strong>Action:</strong> {pendingApproval.description}</p>
+              {pendingApproval.input.path && (
+                <p className="text-sm mb-1"><strong>Target:</strong> {pendingApproval.input.path}</p>
+              )}
+              <div className="flex gap-2 mt-3">
+                <Button
+                  size="sm"
+                  onClick={() => handleApproval(true)}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  ✅ Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleApproval(false)}
+                  className="border-red-500 text-red-400 hover:bg-red-500/20"
+                >
+                  ❌ Reject
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div ref={messageEndRef} />
       </div>
 
@@ -198,12 +311,12 @@ export const ChatWindow = () => {
             value={inputValue}
             onChange={handleInputChange}
             className="flex-1 bg-black text-white border-gray-600 rounded-lg focus:ring-eva-primary placeholder:text-gray-400"
-            disabled={isProcessing}
+            disabled={isProcessing || !!pendingApproval}
           />
           <Button
             type="submit"
             className="bg-eva-primary hover:bg-eva-primary-dark text-white font-bold py-2 px-4 rounded-lg"
-            disabled={isProcessing || !inputValue.trim()}>
+            disabled={isProcessing || !inputValue.trim() || !!pendingApproval}>
             Send
           </Button>
           <AudioRecorder onAudioMessage={handleSendAudioMessage} isProcessing={isProcessing} />

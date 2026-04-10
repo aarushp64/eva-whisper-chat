@@ -55,10 +55,25 @@ export const handleMessage = async (data) => {
     // Get user preferences to personalize response
     const userPreference = await UserPreference.findOne({ userId: senderId });
 
-    // Generate EVA's response (pass runtime LLM config if provided)
+    // Generate EVA's response (pass runtime LLM config + approval result if provided)
     const responseContent = await generateResponse(content, userPreference, sentiment, isGroupChat, llmConfig);
-    
-    // Save EVA's response
+
+    // ── HITL: If approval is pending, return structured response without saving to DB ──
+    if (responseContent && typeof responseContent === 'object' && responseContent.isApproval) {
+      return {
+        message: {
+          content: responseContent.response,
+          isApproval: true,
+          pendingApproval: responseContent.pendingApproval,
+          sessionId: responseContent.sessionId,
+          sender: 'assistant',
+          chatType: isGroupChat ? 'group' : 'private',
+        },
+        userMessage,
+      };
+    }
+
+    // Save EVA's response (normal flow)
     const assistantMessage = new Message({
       chatId: messageChatId,
       groupId: messageGroupId,

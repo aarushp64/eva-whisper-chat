@@ -1,0 +1,44 @@
+[
+  {
+    "file": "packages/backend/server/src/ai/tools/fileTool.js (writeFileTool)",
+    "reason": "writeFileTool in fileTool.js has NO security controls (no path blocking, no risk_level). fileWriteTool.js has BLOCKED_PATH_PREFIXES, isPathSafe(), generateApprovalPrompt(). They register the SAME tool name 'write_file'. The secure version should replace the insecure one.",
+    "target": "Merge fileWriteTool's security logic INTO fileTool.js's writeFileTool, then delete fileWriteTool.js entirely.",
+    "action": "move_security_to_source"
+  },
+  {
+    "file": "packages/backend/server/src/ai/tools/registry.js",
+    "reason": "Registers ALL built-in tools (readFileTool, writeFileTool, shellTool, searchTool, webTool). tools/index.js ALSO re-registers them. Double registration is harmless (Map.set overwrites) but wasteful and confusing.",
+    "target": "Keep registration ONLY in registry.js. tools/index.js should only re-export, not re-register.",
+    "action": "deduplicate_registration"
+  },
+  {
+    "file": "packages/backend/server/core/agent/ (entire Python agent stack)",
+    "reason": "Python agent (agent.py, tools.py, executor.py, agent_factory.py, llm/ollama_client.py, llm/ollama_stub.py, rag/) is a COMPLETE DUPLICATE of the JS src/ai/ pipeline. The frontend connects to Node.js (port 8081), not Flask (port 5000) for chat. The Python agent is never invoked in the active chat flow.",
+    "target": "Archive core/agent/, core/llm/, core/rag/ for reference. The JS src/ai/ is the single source of truth for agent orchestration.",
+    "action": "archive_not_delete"
+  },
+  {
+    "file": "packages/backend/server/utils/responseGenerator.js vs utils/response_generator.py",
+    "reason": "Two completely separate response generation pipelines. JS version (responseGenerator.js) routes through src/ai/agent/agent.js → active. Python version (response_generator.py) routes through NLP sentiment + multi-provider LLM — only called by Python message_controller.py which is NOT on the frontend's socket path.",
+    "target": "JS responseGenerator.js is the active pipeline. Python response_generator.py is only used by the Flask REST API, which may still serve external clients. Mark for Phase 4 consolidation.",
+    "action": "defer_to_phase_4"
+  },
+  {
+    "file": "packages/backend/server/models/*.js vs models/*.py",
+    "reason": "Identical schemas in both languages. Mongoose (JS) and SQLAlchemy (Python) define the same User, Chat, Message, Group, etc. models.",
+    "target": "Cannot consolidate without choosing a single backend. Since Node.js is the primary chat server and Flask serves REST, both are needed. Document the duplication for Phase 4 API unification.",
+    "action": "document_not_consolidate"
+  },
+  {
+    "file": "packages/backend/server/controllers/*.js vs controllers/*.py",
+    "reason": "Parallel auth/chat/user/group controllers in both languages serving identical endpoints on different ports (8081 vs 5000).",
+    "target": "Both are live — Node.js for Socket.IO chat, Flask for REST API. De-duplication requires a single backend decision (Phase 4).",
+    "action": "defer_to_phase_4"
+  },
+  {
+    "file": "packages/backend/server/src/ai/memory.js",
+    "reason": "In-memory rolling window conversation history. src/ai/memory/semantic.js (Phase 3) provides semantic memory with LRU + vector store. memory.js is a simpler version used by router.js for context prepending.",
+    "target": "memory.js serves a DIFFERENT purpose — it's the short-term conversation window prepended to every prompt. semantic.js is long-term context retrieval. Both are needed. Rename memory.js to shortTermMemory.js for clarity.",
+    "action": "rename_for_clarity"
+  }
+]

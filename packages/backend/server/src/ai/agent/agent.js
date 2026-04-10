@@ -1,60 +1,128 @@
 /**
  * Agent — main orchestrator for the agentic assistant
  *
- * Flow: Input → Intent Detection → Route by intent:
- *   CHAT   → direct LLM response via routePrompt
- *   TASK   → planner → executor (multi-step)
- *   ACTION → executor (single step, tool-first)
- *   SEARCH → direct LLM response with search context
+ * Phase 3 Pipeline:
+ *   Input → Intent Detection (structured)
+ *         → Subagent Delegation (if confidence > 0.8 + matching specialization)
+ *         → Planner (multi-step breakdown)
+ *         → Executor (tool execution + HITL gate)
+ *         → Review Loop (self-correction)
+ *         → Semantic Memory Store
+ *         → Final Response
  *
- * The original runAgent() tool-loop is preserved for backward compatibility.
+ * HITL: High-risk steps return pending_approval. Caller resumes with
+ *       { approvalResult: { sessionId, approved } }.
+ *
+ * Backward compatible: runAgent() legacy loop preserved.
+ * Streaming and llmConfig threading intact.
  */
 
 import { routePrompt } from '../router.js';
 import { detectIntent } from '../intent.js';
 import { createPlan } from './planner.js';
-import { executeStep } from './executor.js';
+import { executePlan, executeStepLegacy, consumeApprovalSession } from './executor.js';
+import { delegateToSubagent, findSubagent } from '../agents/subagents.js';
+import { reviewOutput } from '../loop/review.js';
+import { storeMemory, recallMemory } from '../memory/semantic.js';
 import { addMessage, getMemory } from '../memory.js';
-import { tools, getToolDescriptions } from '../tools/index.js';
+import { getToolsForPrompt } from '../tools/index.js';
+
+// ─── Configuration ────────────────────────────────────────────────────
 
 const MAX_AGENT_STEPS = 5;
 
-// ─── Main entry point ───────────────────────────────────────────────
+// Intents that trigger the full planner → executor pipeline
+const PLANNED_INTENTS = new Set([
+  'TASK', 'ACTION', 'SOCIAL', 'MEDIA', 'PRODUCTIVITY', 'COMMUNICATION',
+]);
+
+// Intents that skip subagent delegation (handled directly)
+const DIRECT_INTENTS = new Set(['CHAT', 'SEARCH']);
+
+// ─── Session ID Generation ────────────────────────────────────────────
 
 /**
- * Run the full assistant pipeline:
- * intent detection → planning → execution → response
+ * Generate a unique session ID for memory scoping.
+ * @returns {string}
+ */
+function generateSessionId() {
+  return `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ─── Main Entry Point ─────────────────────────────────────────────────
+
+/**
+ * Run the full assistant pipeline with Phase 3 agentic flow.
  *
  * @param {string} input — the user's message
- * @param {{provider?: string, model?: string, apiKey?: string}} [llmConfig] — runtime LLM config
- * @returns {Promise<string>} — the final response
+ * @param {{
+ *   provider?: string,
+ *   model?: string,
+ *   apiKey?: string,
+ *   approvalResult?: { sessionId: string, approved: boolean },
+ *   sessionId?: string — override auto-generated session ID
+ * }} [options] — LLM config + optional HITL approval resume
+ * @returns {Promise<string | { response: string, pendingApproval?: object, sessionId?: string }>}
  */
-export async function runAssistant(input, llmConfig) {
+export async function runAssistant(input, options) {
+  // Support legacy call signature: runAssistant(input, llmConfig)
+  const llmConfig = options && !options.provider && !options.approvalResult && !options.sessionId
+    ? options
+    : options || {};
+  const approvalResult = options?.approvalResult;
+  const sessionId = options?.sessionId || generateSessionId();
+
   console.log(`\n${'═'.repeat(60)}`);
   console.log(`[Assistant] Input: "${input.slice(0, 100)}"`);
-  if (llmConfig) {
+  console.log(`[Assistant] Session: ${sessionId}`);
+  if (llmConfig?.provider) {
     console.log(`[Assistant] LLM Config: ${llmConfig.provider}/${llmConfig.model || 'default'}`);
   }
+  if (approvalResult) {
+    console.log(`[Assistant] Resuming approval session: ${approvalResult.sessionId} (approved: ${approvalResult.approved})`);
+  }
 
-  const intent = detectIntent(input);
-  console.log(`[Assistant] Intent: ${intent}`);
+  // ── Resume from HITL approval (Phase 2) ──
+  if (approvalResult?.sessionId) {
+    return await resumeFromApproval(input, approvalResult, llmConfig, sessionId);
+  }
+
+  // ── Phase 1: Structured Intent Detection ──
+  const intentResult = detectIntent(input, { structured: true });
+  // Attach raw input for subagent keyword matching
+  intentResult.metadata.rawInput = input;
+  console.log(`[Assistant] Intent: ${intentResult.intent} (confidence: ${intentResult.confidence})`);
+
+  // ── Recall relevant context from semantic memory ──
+  let memoryContext = '';
+  try {
+    const memories = await recallMemory(input, 3, sessionId);
+    if (memories.length > 0) {
+      memoryContext = '\nRelevant past context:\n' +
+        memories.map(m => `- ${m.content} (score: ${m.score.toFixed(2)})`).join('\n');
+      console.log(`[Assistant] Recalled ${memories.length} memory entries`);
+    }
+  } catch {
+    // Memory recall is non-blocking
+  }
 
   try {
-    switch (intent) {
+    // Route based on intent type
+    switch (intentResult.intent) {
       case 'CHAT':
-        return await handleChat(input, llmConfig);
+      case 'SEARCH':
+        return await handleChatLike(input, intentResult, llmConfig, sessionId, memoryContext);
 
       case 'TASK':
-        return await handleTask(input, llmConfig);
-
       case 'ACTION':
-        return await handleAction(input, llmConfig);
-
-      case 'SEARCH':
-        return await handleSearch(input, llmConfig);
+      case 'SOCIAL':
+      case 'MEDIA':
+      case 'PRODUCTIVITY':
+      case 'COMMUNICATION':
+        return await handlePlannedTask(input, intentResult, llmConfig, sessionId, memoryContext);
 
       default:
-        return await handleChat(input, llmConfig);
+        return await handleChatLike(input, intentResult, llmConfig, sessionId, memoryContext);
     }
   } catch (err) {
     console.error(`[Assistant] Error:`, err.message);
@@ -67,94 +135,173 @@ export async function runAssistant(input, llmConfig) {
   }
 }
 
-// ─── Intent handlers ────────────────────────────────────────────────
+// ─── HITL Resume (Phase 2, preserved) ─────────────────────────────────
 
 /**
- * CHAT — simple conversational response, includes memory for context.
+ * Resume plan execution after user approves/rejects a high-risk action.
+ *
+ * @param {string} _input — original input
+ * @param {{ sessionId: string, approved: boolean }} approvalResult
+ * @param {object} [llmConfig]
+ * @param {string} sessionId
+ * @returns {Promise<string | object>}
  */
-async function handleChat(input, llmConfig) {
-  console.log('[Assistant] Handling as CHAT');
+async function resumeFromApproval(_input, approvalResult, llmConfig, sessionId) {
+  const session = consumeApprovalSession(approvalResult.sessionId);
 
-  const memory = getMemory();
-  const messages = [
-    { role: 'system', content: 'You are EVA, a friendly and helpful AI assistant. Be concise and natural.' },
-    ...memory,
-    { role: 'user', content: input },
-  ];
-
-  return await routePrompt(messages, llmConfig);
-}
-
-/**
- * TASK — multi-step workflow. Generate a plan, then execute each step.
- */
-async function handleTask(input, llmConfig) {
-  console.log('[Assistant] Handling as TASK');
-
-  // Step 1: Generate a plan
-  const plan = await createPlan(input, llmConfig);
-  console.log(`[Assistant] Plan: ${JSON.stringify(plan.steps)}`);
-
-  // Step 2: Execute each step sequentially, accumulating context
-  const results = [];
-  let context = '';
-
-  for (let i = 0; i < plan.steps.length; i++) {
-    const step = plan.steps[i];
-    console.log(`[Assistant] Executing step ${i + 1}/${plan.steps.length}: ${step}`);
-
-    const result = await executeStep(step, context, llmConfig);
-    results.push({ step, result });
-
-    // Build context for the next step
-    context += `\nStep ${i + 1} (${step}): ${result}`;
+  if (!session) {
+    console.warn('[Assistant] Approval session expired. Requesting fresh input.');
+    return 'Your approval session expired. Please resubmit your original request.';
   }
 
-  // Step 3: Summarize results into a final response
-  const summaryMessages = [
-    {
-      role: 'system',
-      content: 'You are EVA. Summarize the results of a completed multi-step task. Be clear and concise. Present the key outcomes.',
-    },
-    {
-      role: 'user',
-      content: `Original request: ${input}\n\nExecution results:\n${results.map((r, i) => `Step ${i + 1}: ${r.step}\nResult: ${r.result}`).join('\n\n')}`,
-    },
-  ];
+  console.log(`[Assistant] Resuming plan execution (approved: ${approvalResult.approved})`);
 
-  return await routePrompt(summaryMessages, llmConfig);
+  const result = await executePlan(session.plan, _input, llmConfig, {
+    approvalResult,
+  });
+
+  if (result.status === 'pending_approval') {
+    return {
+      response: 'Another action requires your approval.',
+      pendingApproval: result.pendingApprovals?.[0],
+      sessionId: result.sessionId,
+    };
+  }
+
+  // Phase 3: Review the resumed output
+  const rawOutput = result.summary || result.results.map(r => r.result).filter(Boolean).join('\n');
+  const reviewed = await reviewOutput(_input, rawOutput, llmConfig);
+
+  // Store in memory
+  await storeMemory(sessionId, reviewed.finalOutput, {
+    intent: 'resumed_task',
+    toolUsage: result.results,
+  });
+
+  return reviewed.finalOutput;
 }
 
-/**
- * ACTION — single direct action, attempt tool execution first.
- */
-async function handleAction(input, llmConfig) {
-  console.log('[Assistant] Handling as ACTION');
-  return await executeStep(input, '', llmConfig);
-}
+// ─── Intent Handlers ──────────────────────────────────────────────────
 
 /**
- * SEARCH — information lookup, answered by the LLM with search context.
+ * CHAT / SEARCH — direct LLM response with memory context.
+ *
+ * @param {string} input
+ * @param {object} intentResult
+ * @param {object} [llmConfig]
+ * @param {string} sessionId
+ * @param {string} memoryContext
+ * @returns {Promise<string>}
  */
-async function handleSearch(input, llmConfig) {
-  console.log('[Assistant] Handling as SEARCH');
+async function handleChatLike(input, intentResult, llmConfig, sessionId, memoryContext) {
+  const isSearch = intentResult.intent === 'SEARCH';
+  console.log(`[Assistant] Handling as ${intentResult.intent}`);
 
   const memory = getMemory();
+
+  const systemContent = isSearch
+    ? `You are EVA, a knowledgeable AI assistant.
+Answer the user's question thoroughly but concisely.${memoryContext}`
+    : `You are EVA, a friendly and helpful AI assistant. Be concise and natural.${memoryContext}`;
+
   const messages = [
-    {
-      role: 'system',
-      content: `You are EVA, a knowledgeable AI assistant.
-Answer the user's question thoroughly but concisely.
-If the question is about files or code, suggest using tools in your next response.`,
-    },
+    { role: 'system', content: systemContent },
     ...memory,
     { role: 'user', content: input },
   ];
 
-  return await routePrompt(messages, llmConfig);
+  const response = await routePrompt(messages, llmConfig);
+
+  // Phase 3: Store interaction in semantic memory
+  await storeMemory(sessionId, `User: ${input}\nEVA: ${response}`, {
+    intent: intentResult.intent,
+    confidence: intentResult.confidence,
+  });
+
+  return response;
 }
 
-// ─── Legacy agent loop (preserved for backward compatibility) ───────
+/**
+ * TASK / ACTION / SOCIAL / MEDIA / PRODUCTIVITY / COMMUNICATION
+ *
+ * Phase 3 Pipeline:
+ *   1. Subagent Delegation (if confidence > 0.8 + match)
+ *   2. Planner (structured step breakdown)
+ *   3. Executor (tool execution + HITL gate)
+ *   4. Review Loop (self-correction)
+ *   5. Semantic Memory Store
+ *
+ * @param {string} input
+ * @param {object} intentResult
+ * @param {object} [llmConfig]
+ * @param {string} sessionId
+ * @param {string} memoryContext
+ * @returns {Promise<string | { response: string, pendingApproval: object, sessionId: string }>}
+ */
+async function handlePlannedTask(input, intentResult, llmConfig, sessionId, memoryContext) {
+  console.log(`[Assistant] Handling as ${intentResult.intent}`);
+
+  // ── Phase 3 Step 1: Subagent Delegation ──
+  const subagentResult = await delegateToSubagent(input, llmConfig, sessionId, intentResult);
+
+  if (subagentResult?.delegated) {
+    console.log(`[Assistant] Delegated to subagent: ${subagentResult.metadata.subagent}`);
+
+    // Phase 3 Step 4: Review subagent output
+    const reviewed = await reviewOutput(input, subagentResult.output, llmConfig);
+
+    // Phase 3 Step 5: Store in semantic memory
+    await storeMemory(sessionId, `User: ${input}\nEVA (${subagentResult.metadata.subagent}): ${reviewed.finalOutput}`, {
+      intent: intentResult.intent,
+      confidence: intentResult.confidence,
+      subagent: subagentResult.metadata.subagent,
+    });
+
+    return reviewed.finalOutput;
+  }
+
+  // ── Phase 3 Step 2: Planner (structured breakdown) ──
+  console.log('[Assistant] Planning multi-step task...');
+  const plan = await createPlan(input, llmConfig, intentResult);
+
+  // ── Phase 3 Step 3: Executor (with HITL support) ──
+  const result = await executePlan(plan, input, llmConfig, {
+    maxIterations: MAX_AGENT_STEPS,
+  });
+
+  // ── Handle HITL pending approval ──
+  if (result.status === 'pending_approval') {
+    console.log(`[Assistant] Plan halted — awaiting approval for: ${result.pendingApprovals?.[0]?.tool}`);
+    return {
+      response: result.pendingApprovals?.[0]?.prompt || 'An action requires your approval.',
+      pendingApproval: result.pendingApprovals?.[0],
+      sessionId: result.sessionId,
+    };
+  }
+
+  if (result.status === 'failed') {
+    return `I was unable to complete your request: ${result.error || 'Unknown error.'}`;
+  }
+
+  // ── Phase 3 Step 4: Review Loop ──
+  const rawOutput = result.summary || result.results.map(r => r.result).filter(Boolean).join('\n');
+  console.log('[Assistant] Running review loop...');
+  const reviewed = await reviewOutput(input, rawOutput, llmConfig);
+
+  // ── Phase 3 Step 5: Store in Semantic Memory ──
+  await storeMemory(sessionId, `User: ${input}\nEVA: ${reviewed.finalOutput}`, {
+    intent: intentResult.intent,
+    confidence: intentResult.confidence,
+    reviewScore: reviewed.score,
+    reviewPassed: reviewed.passed,
+    toolResults: result.results.filter(r => r.status === 'success').length,
+  });
+
+  console.log(`[Assistant] Plan ${result.status} — review: ${reviewed.passed ? 'passed' : 'corrected'} (score: ${reviewed.score})`);
+  return reviewed.finalOutput;
+}
+
+// ─── Legacy Agent Loop (Phase 1/2 backward compat) ────────────────────
 
 /**
  * Run the original tool-calling agent loop.
@@ -170,6 +317,8 @@ export async function runAgent(userInput, llmConfig) {
 
   console.log(`[AgentLoop] Starting for: "${userInput.slice(0, 80)}"`);
 
+  const toolDescriptions = getToolsForPrompt();
+
   while (steps < MAX_AGENT_STEPS) {
     const messages = [
       {
@@ -177,7 +326,7 @@ export async function runAgent(userInput, llmConfig) {
         content: `You are EVA, an AI assistant with tool access.
 
 Available tools:
-${getToolDescriptions()}
+${toolDescriptions}
 
 If you need a tool, respond with ONLY JSON: {"action": "tool_name", "input": { ... }}
 Otherwise respond normally. No markdown code blocks around JSON.`,
@@ -190,17 +339,26 @@ Otherwise respond normally. No markdown code blocks around JSON.`,
     try {
       const parsed = JSON.parse(response.trim());
       if (parsed.action && typeof parsed.action === 'string') {
-        const tool = tools.find(t => t.name === parsed.action);
-        if (tool) {
-          console.log(`[AgentLoop] Step ${steps + 1}: tool "${tool.name}"`);
-          const result = await tool.execute(parsed.input || {});
-          context = `Previous request: ${userInput}\n\nTool "${tool.name}" returned:\n${result}\n\nContinue helping the user.`;
-          steps++;
-          continue;
+        const toolName = parsed.action;
+        const input = parsed.input || {};
+
+        const stepResult = await executeStepLegacy(
+          `${toolName} with input: ${JSON.stringify(input)}`,
+          context,
+          llmConfig
+        );
+
+        if (stepResult.includes('Approval required') || stepResult.includes('⚠️')) {
+          console.log(`[AgentLoop] HITL gate triggered for tool "${toolName}"`);
+          return stepResult;
         }
+
+        context = `Previous request: ${userInput}\n\nTool "${toolName}" returned:\n${stepResult}\n\nContinue helping the user.`;
+        steps++;
+        continue;
       }
     } catch {
-      // Natural language response
+      // Natural language response — done
     }
 
     console.log(`[AgentLoop] Done in ${steps + 1} step(s)`);
