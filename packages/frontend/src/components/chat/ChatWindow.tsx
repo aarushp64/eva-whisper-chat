@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { AudioRecorder } from './AudioRecorder';
+import { VoiceControls } from './VoiceControls';
 import { LLMSettingsModal, getLLMConfig, type LLMConfig } from './LLMSettingsModal';
 import { Badge } from '@/components/ui/badge';
 import io, { Socket } from 'socket.io-client';
@@ -241,6 +242,7 @@ export const ChatWindow = () => {
         <div className="flex items-center space-x-3">
           <span className="w-3 h-3 bg-green-500 rounded-full"></span>
           <span>Online</span>
+          <VoiceControls socket={socket} llmConfig={llmConfig} setLlmConfig={setLlmConfig} />
           <LLMSettingsModal onConfigChange={handleConfigChange} />
         </div>
       </header>

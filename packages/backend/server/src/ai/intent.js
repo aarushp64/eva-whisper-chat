@@ -47,18 +47,18 @@ const SOCIAL_KEYWORDS = [
 const MEDIA_KEYWORDS = [
   'edit image', 'crop', 'resize', 'convert video', 'compress image',
   'extract audio', 'merge pdf', 'generate image', 'create image',
-  'photo', 'screenshot', 'transcode', 'render',
+  'photo', 'screenshot', 'transcode', 'render', 'play', 'pause', 'resume'
 ];
 
 const PRODUCTIVITY_KEYWORDS = [
   'schedule', 'remind', 'reminder', 'calendar', 'send email', 'create task',
   'add to calendar', 'set alarm', 'todo', 'to-do', 'organize my',
-  'plan my', 'book a meeting', 'invite', 'event',
+  'plan my', 'book a meeting', 'invite', 'event', 'set timer', 'timer'
 ];
 
 const COMMUNICATION_KEYWORDS = [
   'message', 'call', 'notify', 'ping', 'contact', 'reach out',
-  'send a text', 'email', 'dm', 'direct message', 'text',
+  'send a text', 'email', 'dm', 'direct message', 'text', 'call'
 ];
 
 // Ordered checks: most specific first, least specific (CHAT) as default

@@ -14,6 +14,10 @@ import groupRoutes from './routes/group.js';
 
 // Import controllers
 import { handleMessage } from './controllers/messageController.js';
+import { SpeechProcessor } from './speech/speech_processor.js';
+import { streamTTS } from './src/ai/tts/engine.js';
+
+const speechProcessor = new SpeechProcessor();
 
 // Load environment variables
 dotenv.config();
@@ -139,6 +143,60 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('Error processing message:', error);
       socket.emit('error', { message: 'Error processing your message' });
+    }
+  });
+
+  socket.on("voice_message", async ({ audioBlob, llmConfig }) => {
+    try {
+      const audioBase64 = audioBlob.toString("base64");
+      const { transcription, error } = await speechProcessor.transcribe_audio_base64(
+        audioBase64,
+        "webm"
+      );
+
+      if (error) {
+        console.warn("[Voice] Whisper failed:", error);
+        socket.emit("receive_message", { role: "assistant", message: { content: "Sorry, I couldn't hear you.", role: "assistant" } });
+        return;
+      }
+
+      const { detectIntent } = await import("./src/ai/intent.js");
+      const intentInfo = detectIntent(transcription, { structured: true });
+
+      const messageData = {
+        chatId: null,
+        text: transcription,
+        senderId: socket.userId || 'anonymous_user',
+        llmConfig,
+        intent: intentInfo.intent,
+        confidence: intentInfo.confidence,
+      };
+
+      const response = await handleMessage(messageData);
+      const targetRoom = messageData.groupId ? messageData.groupId : messageData.chatId;
+      
+      if (response?.message?.isApproval) {
+        io.to(targetRoom || socket.id).emit('approval_request', {
+          content: response.message.content,
+          pendingApproval: response.message.pendingApproval,
+          sessionId: response.message.sessionId,
+        });
+      } else {
+        io.to(targetRoom || socket.id).emit("chat_message", { message: response.message.content || response.text, user: 'eva' });
+      }
+
+      if (llmConfig?.enableTTS && (response?.message?.content || response?.text)) {
+        const text = response.message?.content || response.text;
+        const ttsProvider = process.env.TTS_PROVIDER || "edge";
+
+        for await (const chunk of streamTTS(text, { provider: ttsProvider })) {
+          const audioBase64 = Buffer.from(chunk).toString("base64");
+          io.to(socket.id).emit("tts_chunk", { audioBase64 });
+        }
+      }
+    } catch (err) {
+      console.error("[Voice] processing error:", err);
+      socket.emit("chat_message", { user: 'eva', message: "I ran into an error while processing your voice request." });
     }
   });
 
