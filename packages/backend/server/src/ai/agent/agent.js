@@ -26,6 +26,9 @@ import { reviewOutput } from '../loop/review.js';
 import { storeMemory, recallMemory } from '../memory/semantic.js';
 import { addMessage, getMemory } from '../memory.js';
 import { getToolsForPrompt } from '../tools/index.js';
+import { gateway } from '../gateway/bridge.js';
+import { checkProactiveSuggestions, capturePreferences } from '../behaviors/proactive.js';
+import * as GoogleCalendar from '../integrations/google_calendar.js';
 
 // ─── Configuration ────────────────────────────────────────────────────
 
@@ -93,6 +96,17 @@ export async function runAssistant(input, options) {
   intentResult.metadata.rawInput = input;
   console.log(`[Assistant] Intent: ${intentResult.intent} (confidence: ${intentResult.confidence})`);
 
+  // ── Phase 4: Proactive Memory Catch ──
+  await capturePreferences(sessionId, input);
+  const suggestion = checkProactiveSuggestions([intentResult]);
+
+  // ── Phase 4: Heavy Offloading (Gateway) ──
+  let extraContext = '';
+  if (intentResult.intent === 'SEARCH' && intentResult.confidence > 0.9) {
+    const gatewayRes = await gateway.dispatch('HEAVY_RAG', { query: input });
+    if (!gatewayRes?._gateway_fallback) extraContext = gatewayRes;
+  }
+
   // ── Recall relevant context from semantic memory ──
   let memoryContext = '';
   try {
@@ -102,16 +116,21 @@ export async function runAssistant(input, options) {
         memories.map(m => `- ${m.content} (score: ${m.score.toFixed(2)})`).join('\n');
       console.log(`[Assistant] Recalled ${memories.length} memory entries`);
     }
+    if (extraContext) {
+      memoryContext += `\nGateway Knowledge:\n${JSON.stringify(extraContext)}`;
+    }
   } catch {
     // Memory recall is non-blocking
   }
 
   try {
+    let responseText = '';
     // Route based on intent type
     switch (intentResult.intent) {
       case 'CHAT':
       case 'SEARCH':
-        return await handleChatLike(input, intentResult, llmConfig, sessionId, memoryContext);
+        responseText = await handleChatLike(input, intentResult, llmConfig, sessionId, memoryContext);
+        break;
 
       case 'TASK':
       case 'ACTION':
@@ -119,11 +138,18 @@ export async function runAssistant(input, options) {
       case 'MEDIA':
       case 'PRODUCTIVITY':
       case 'COMMUNICATION':
-        return await handlePlannedTask(input, intentResult, llmConfig, sessionId, memoryContext);
+        responseText = await handlePlannedTask(input, intentResult, llmConfig, sessionId, memoryContext);
+        break;
 
       default:
-        return await handleChatLike(input, intentResult, llmConfig, sessionId, memoryContext);
+        responseText = await handleChatLike(input, intentResult, llmConfig, sessionId, memoryContext);
     }
+    
+    // Proactive Response Attachment
+    if (typeof responseText === 'string' && suggestion) {
+      return `${responseText}\n\n*Voice Assistant Suggestion: ${suggestion}*`;
+    }
+    return responseText;
   } catch (err) {
     console.error(`[Assistant] Error:`, err.message);
     // Final fallback — simple LLM call
